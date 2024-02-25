@@ -1,7 +1,7 @@
 #ifndef CUCKOO_FILTER_CUCKOO_FILTER_H_
 #define CUCKOO_FILTER_CUCKOO_FILTER_H_
 
-#include <assert.h>
+#include <cassert>
 #include <algorithm>
 
 #include "debug.h"
@@ -65,17 +65,22 @@ class CuckooFilter {
 
   inline void GenerateIndexTagHash(const ItemType& item, size_t* index,
                                    uint32_t* tag) const {
-    const uint64_t hash = hasher_(item);
+    const uint64_t hash = hasher_(item); //只用到了低32位
     *index = IndexHash(hash >> 32);
     *tag = TagHash(hash);
   }
-
+  /**
+   * \brief
+   * \param index index1|index2
+   * \param tag 指纹：fingerprint
+   * \return index|index1 ， 即另一个位置
+   */
   inline size_t AltIndex(const size_t index, const uint32_t tag) const {
     // NOTE(binfan): originally we use:
     // index ^ HashUtil::BobHash((const void*) (&tag), 4)) & table_->INDEXMASK;
     // now doing a quick-n-dirty way:
     // 0x5bd1e995 is the hash constant from MurmurHash2
-    return IndexHash((uint32_t)(index ^ (tag * 0x5bd1e995)));
+    return IndexHash((uint32_t)(index ^ (tag * 0x5bd1e995))); //细节，与图片不同的地方：https://s2.loli.net/2021/12/07/dNBWZwc43poO7CL.png
   }
 
   Status AddImpl(const size_t i, const uint32_t tag);
@@ -117,6 +122,16 @@ class CuckooFilter {
 
   // size of the filter in bytes.
   size_t SizeInBytes() const { return table_->SizeInBytes(); }
+
+//test
+
+public:
+  void GenerateIndexTagHashTest(const ItemType& item, size_t* index,
+                                   uint32_t* tag)  {
+    const uint64_t hash = HashUtil::SuperFastHash(item);
+    *index = IndexHash(hash >> 32);
+    *tag = TagHash(hash);
+  }
 };
 
 template <typename ItemType, size_t bits_per_item,
@@ -124,9 +139,9 @@ template <typename ItemType, size_t bits_per_item,
 Status CuckooFilter<ItemType, bits_per_item, TableType, HashFamily>::Add(
     const ItemType &item) {
   size_t i;
-  uint32_t tag;
+  uint32_t tag; // tag可以堪称是论文的fingerprint
 
-  if (victim_.used) {
+  if (victim_.used) { // todo：q：vimtim_的作用？？
     return NotEnoughSpace;
   }
 
@@ -155,10 +170,11 @@ Status CuckooFilter<ItemType, bits_per_item, TableType, HashFamily>::AddImpl(
     curindex = AltIndex(curindex, curtag);
   }
 
+  //如果到这里，说明踢出次数达到了kMaxCuckooCount
   victim_.index = curindex;
   victim_.tag = curtag;
   victim_.used = true;
-  return Ok;
+  return Ok;  //虽然到达了最大的提出次数，但是从语义来说，最开始向插入的那个元素已经成功插入了
 }
 
 template <typename ItemType, size_t bits_per_item,
@@ -166,7 +182,7 @@ template <typename ItemType, size_t bits_per_item,
 Status CuckooFilter<ItemType, bits_per_item, TableType, HashFamily>::Contain(
     const ItemType &key) const {
   bool found = false;
-  size_t i1, i2;
+  size_t i1, i2; //two indexes
   uint32_t tag;
 
   GenerateIndexTagHash(key, &i1, &tag);
@@ -175,7 +191,7 @@ Status CuckooFilter<ItemType, bits_per_item, TableType, HashFamily>::Contain(
   assert(i1 == AltIndex(i2, tag));
 
   found = victim_.used && (tag == victim_.tag) &&
-          (i1 == victim_.index || i2 == victim_.index);
+          (i1 == victim_.index || i2 == victim_.index); // 如果不能再插入了，victim_.used设置为true，且victim_保存着无处安放的key
 
   if (found || table_->FindTagInBuckets(i1, i2, tag)) {
     return Ok;
@@ -209,6 +225,9 @@ Status CuckooFilter<ItemType, bits_per_item, TableType, HashFamily>::Delete(
     return NotFound;
   }
 TryEliminateVictim:
+  // 元素成功删除了，可以尝试释放victim了
+  //“尝试”：因为只要kick提出次数达到限制就会设置victim禁止插入，并不代表cuckoofiler所有bucket满了
+  // 也是因此，一个元素被删除，victim_并不肯定被释放
   if (victim_.used) {
     victim_.used = false;
     size_t i = victim_.index;
@@ -234,5 +253,10 @@ std::string CuckooFilter<ItemType, bits_per_item, TableType, HashFamily>::Info()
   }
   return ss.str();
 }
+
+
+
+
+
 }  // namespace cuckoofilter
 #endif  // CUCKOO_FILTER_CUCKOO_FILTER_H_
